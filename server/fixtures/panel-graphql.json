@@ -1,0 +1,39 @@
+{
+  "data": {
+    "repository": {
+      "branchPullRequests": {
+        "nodes": [
+          {
+            "number": 42,
+            "title": "Panel",
+            "url": "https://github.com/o/r/pull/42",
+            "bodyHTML": "<p>Body</p>",
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-08T00:00:00Z",
+            "author": { "login": "tim", "avatarUrl": "https://avatars.githubusercontent.com/u/1" },
+            "labels": { "nodes": [] },
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "closingIssuesReferences": { "nodes": [] },
+            "commits": { "nodes": [] }
+          }
+        ]
+      },
+      "issues": {
+        "nodes": [
+          {
+            "number": 7,
+            "title": "Issue",
+            "url": "https://github.com/o/r/issues/7",
+            "bodyHTML": "",
+            "createdAt": "2026-09-02T00:00:00Z",
+            "updatedAt": "2026-09-03T00:00:00Z",
+            "author": null,
+            "labels": { "nodes": [{ "name": "bug", "color": "d73a4a" }] }
+          }
+        ]
+      },
+      "pullRequests": { "nodes": [] }
+    }
+  }
+}
