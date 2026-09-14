@@ -1,10 +1,11 @@
 import type { PluginTheme } from "@getpaseo/plugin";
+import { useToast } from "@getpaseo/plugin/client/react-native";
 import {
   type PluginWorkspacePanelProps,
   useRpc,
   useWorkspace,
 } from "@getpaseo/plugin/client";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
@@ -18,7 +19,10 @@ import {
 
 import {
   loadImageRpc,
+  loadCommentsRpc,
   loadPanelRpc,
+  mergePullRequestRpc,
+  openInVSCodeRpc,
   type GitHubPanelPayload,
   type IssueSummary,
   type PullRequestSummary,
@@ -112,6 +116,14 @@ function makeStyles(theme: PluginTheme, compact: boolean) {
     },
     pinnedCard: { borderColor: theme.colors.accent },
     cardHeader: { padding: compact ? 8 : 10, gap: 4 },
+    cardActionRow: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      flexWrap: "wrap" as const,
+      gap: 6,
+      paddingHorizontal: compact ? 8 : 10,
+      paddingBottom: compact ? 8 : 10,
+    },
     titleRow: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 8 },
     title: { flex: 1, color: theme.colors.foreground, fontSize: 14, fontWeight: "600" as const },
     meta: { color: theme.colors.foregroundMuted, fontSize: 11 },
@@ -136,6 +148,15 @@ function makeStyles(theme: PluginTheme, compact: boolean) {
     statusGood: { color: theme.colors.statusSuccess },
     statusBad: { color: theme.colors.statusDanger },
     statusWarn: { color: theme.colors.statusWarning },
+    mergeRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    mergeButton: {
+      backgroundColor: theme.colors.accent,
+      borderRadius: radius,
+      paddingHorizontal: 10,
+      paddingVertical: compact ? 5 : 7,
+    },
+    mergeButtonDisabled: { opacity: 0.6 },
+    mergeButtonLabel: { color: theme.colors.accentForeground, fontSize: 12, fontWeight: "600" as const },
     body: { padding: compact ? 8 : 10, borderTopWidth: 1, borderTopColor: theme.colors.border },
     sectionHeader: {
       flexDirection: "row" as const,
@@ -176,6 +197,8 @@ function makeStyles(theme: PluginTheme, compact: boolean) {
     mdNested: { marginLeft: 8 },
     mdDetailsSummary: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 4 },
     mdDetailsMarker: { color: theme.colors.foregroundMuted, width: 12 },
+    commentRail: { gap: 8 },
+    comment: { borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: 8 },
   };
 }
 
@@ -241,17 +264,79 @@ function Labels({ item, styles }: { item: IssueSummary; styles: PanelStyles }) {
   );
 }
 
+type CommentKind = "issue" | "pullRequest";
+
+function CommentThread({
+  directory,
+  remoteName,
+  kind,
+  number,
+  styles,
+}: {
+  directory: string;
+  remoteName: string;
+  kind: CommentKind;
+  number: number;
+  styles: PanelStyles;
+}) {
+  const callLoadComments = useRpc(loadCommentsRpc);
+  const query = useQuery({
+    queryKey: ["github-panel-comments", directory, remoteName, kind, number],
+    queryFn: () => callLoadComments({ directory, kind, number, remoteName }),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  if (query.isPending) {
+    return <ActivityIndicator accessibilityLabel={`Loading comments for #${number}`} color={styles.meta.color} />;
+  }
+
+  if (query.isError) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Retry loading comments for #${number}`}
+        onPress={() => { void query.refetch(); }}
+      >
+        <Text style={styles.error}>Comments failed to load. Tap to retry. {errorMessage(query.error)}</Text>
+      </Pressable>
+    );
+  }
+
+  const comments = query.data?.comments ?? [];
+  if (comments.length === 0) return <Text style={styles.message}>No comments yet.</Text>;
+
+  return (
+    <View style={styles.commentRail}>
+      {comments.map((comment) => (
+        <View key={comment.id} style={styles.comment}>
+          <Text style={styles.meta}>{comment.author?.login ?? "deleted user"} | {ageLabel(comment.createdAt)}</Text>
+          <Body source={comment.bodyHTML} styles={styles} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function ItemRow({
   item,
+  directory,
+  remoteName,
+  kind,
   expanded,
   onToggle,
   styles,
+  action,
   children,
 }: {
   item: IssueSummary;
+  directory: string;
+  remoteName: string;
+  kind: CommentKind;
   expanded: boolean;
   onToggle: () => void;
   styles: PanelStyles;
+  action?: ReactNode;
   children?: ReactNode;
 }) {
   const author = item.author?.login ?? "deleted user";
@@ -272,9 +357,11 @@ function ItemRow({
         <Labels item={item} styles={styles} />
         {children}
       </Pressable>
+      {action !== undefined ? <View style={styles.cardActionRow}>{action}</View> : null}
       {expanded ? (
         <>
           <Body source={item.bodyHTML} styles={styles} />
+          <CommentThread directory={directory} remoteName={remoteName} kind={kind} number={item.number} styles={styles} />
           <Pressable
             accessibilityRole="link"
             accessibilityLabel={`Open #${item.number} in browser`}
@@ -309,12 +396,127 @@ function PullRequestStatus({ item, styles }: { item: PullRequestSummary; styles:
   );
 }
 
-function PinnedPullRequest({
-  payload,
+function MergeButton({
+  directory,
+  remoteName,
+  pullRequest,
+  onMerged,
   styles,
 }: {
-  payload: ReadyPanelPayload;
+  directory: string;
+  remoteName: string;
+  pullRequest: PullRequestSummary;
+  onMerged: () => void;
   styles: PanelStyles;
+}) {
+  const callMerge = useRpc(mergePullRequestRpc);
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    setConfirming(false);
+  }, [pullRequest.number]);
+  const mutation = useMutation({
+    mutationFn: () => callMerge({ directory, number: pullRequest.number, remoteName }),
+    onSuccess: () => {
+      setConfirming(false);
+      toast.show(`Merged #${pullRequest.number}`, { variant: "success" });
+      onMerged();
+    },
+    onError: (error: unknown) => {
+      setConfirming(false);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  if (mutation.isPending) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Merging pull request #${pullRequest.number}`}
+        disabled
+        style={[styles.mergeButton, styles.mergeButtonDisabled]}
+      >
+        <Text style={styles.mergeButtonLabel}>Merging...</Text>
+      </Pressable>
+    );
+  }
+
+  if (confirming) {
+    return (
+      <View style={styles.mergeRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Confirm merge of pull request #${pullRequest.number}`}
+          style={styles.mergeButton}
+          onPress={() => mutation.mutate()}
+        >
+          <Text style={styles.mergeButtonLabel}>Confirm merge</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Cancel merge"
+          style={styles.button}
+          onPress={() => setConfirming(false)}
+        >
+          <Text style={styles.buttonLabel}>Cancel</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const conflicting = pullRequest.mergeable === "conflicting";
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Merge pull request #${pullRequest.number}`}
+      disabled={conflicting}
+      style={[styles.button, conflicting ? styles.mergeButtonDisabled : null]}
+      onPress={() => setConfirming(true)}
+    >
+      <Text style={styles.buttonLabel}>{conflicting ? "Conflicts" : "Merge"}</Text>
+    </Pressable>
+  );
+}
+
+function OpenInVSCodeButton({
+  directory,
+  pullRequest,
+  styles,
+}: {
+  directory: string;
+  pullRequest: PullRequestSummary;
+  styles: PanelStyles;
+}) {
+  const callOpenInVSCode = useRpc(openInVSCodeRpc);
+  const toast = useToast();
+  const mutation = useMutation({
+    mutationFn: () => callOpenInVSCode({ directory }),
+    onError: (error: unknown) => toast.error(errorMessage(error)),
+  });
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open pull request #${pullRequest.number} in VS Code`}
+      disabled={mutation.isPending}
+      style={[styles.button, mutation.isPending ? styles.mergeButtonDisabled : null]}
+      onPress={() => mutation.mutate()}
+    >
+      <Text style={styles.buttonLabel}>{mutation.isPending ? "Opening..." : "VS Code"}</Text>
+    </Pressable>
+  );
+}
+
+function PinnedPullRequest({
+  payload,
+  directory,
+  styles,
+  onMerged,
+}: {
+  payload: ReadyPanelPayload;
+  directory: string;
+  styles: PanelStyles;
+  onMerged: () => void;
 }) {
   const pullRequest = payload.branchPullRequest;
   if (pullRequest === null) {
@@ -341,6 +543,16 @@ function PinnedPullRequest({
         <Text style={styles.meta}>by {pullRequest.author?.login ?? "deleted user"}</Text>
         <Labels item={pullRequest} styles={styles} />
         <PullRequestStatus item={pullRequest} styles={styles} />
+        <View style={styles.mergeRow}>
+          <MergeButton
+            directory={directory}
+            remoteName={payload.selectedRepository.remoteName}
+            pullRequest={pullRequest}
+            onMerged={onMerged}
+            styles={styles}
+          />
+          <OpenInVSCodeButton directory={directory} pullRequest={pullRequest} styles={styles} />
+        </View>
         {pullRequest.closingIssue !== null ? (
           <Pressable
             accessibilityRole="link"
@@ -354,6 +566,15 @@ function PinnedPullRequest({
         ) : null}
       </View>
       <Body source={pullRequest.bodyHTML} styles={styles} />
+      <View style={styles.cardHeader}>
+        <CommentThread
+          directory={directory}
+          remoteName={payload.selectedRepository.remoteName}
+          kind="pullRequest"
+          number={pullRequest.number}
+          styles={styles}
+        />
+      </View>
     </View>
   );
 }
@@ -361,14 +582,22 @@ function PinnedPullRequest({
 function Section<T extends IssueSummary>({
   title,
   items,
+  directory,
+  remoteName,
+  kind,
   search,
   renderStatus,
+  renderAction,
   styles,
 }: {
   title: string;
   items: T[];
+  directory: string;
+  remoteName: string;
+  kind: CommentKind;
   search: string;
   renderStatus?: (item: T) => ReactNode;
+  renderAction?: (item: T) => ReactNode;
   styles: PanelStyles;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -412,8 +641,12 @@ function Section<T extends IssueSummary>({
             <ItemRow
               key={item.number}
               item={item}
+              directory={directory}
+              remoteName={remoteName}
+              kind={kind}
               expanded={expanded.has(item.number)}
               onToggle={() => toggle(item.number)}
+              action={renderAction?.(item)}
               styles={styles}
             >
               {renderStatus?.(item)}
@@ -440,6 +673,7 @@ function NormalState({ payload, styles }: { payload: Exclude<GitHubPanelPayload,
 
 function ReadyPanel({
   payload,
+  directory,
   styles,
   search,
   onSearch,
@@ -449,6 +683,7 @@ function ReadyPanel({
   onRefresh,
 }: {
   payload: ReadyPanelPayload;
+  directory: string;
   styles: PanelStyles;
   search: string;
   onSearch: (value: string) => void;
@@ -493,7 +728,7 @@ function ReadyPanel({
       </View>
 
       {staleMessage !== null ? <Text accessibilityRole="alert" style={styles.stale}>{staleMessage}</Text> : null}
-      <PinnedPullRequest payload={payload} styles={styles} />
+      <PinnedPullRequest payload={payload} directory={directory} styles={styles} onMerged={onRefresh} />
 
       <View style={styles.toolbar}>
         <TextInput
@@ -508,7 +743,7 @@ function ReadyPanel({
         />
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Refresh GitHub panel"
+          accessibilityLabel="Full refresh: clear cached panel data and reload issues and pull requests from GitHub"
           disabled={refreshing}
           style={styles.button}
           onPress={onRefresh}
@@ -517,12 +752,35 @@ function ReadyPanel({
         </Pressable>
       </View>
 
-      <Section title="Open issues" items={payload.issues} search={search} styles={styles} />
+      <Section
+        title="Open issues"
+        items={payload.issues}
+        directory={directory}
+        remoteName={payload.selectedRepository.remoteName}
+        kind="issue"
+        search={search}
+        styles={styles}
+      />
       <Section
         title="Open pull requests"
         items={payload.pullRequests}
+        directory={directory}
+        remoteName={payload.selectedRepository.remoteName}
+        kind="pullRequest"
         search={search}
         renderStatus={(item) => <PullRequestStatus item={item} styles={styles} />}
+        renderAction={(item) => (
+          <View style={styles.mergeRow}>
+            <MergeButton
+              directory={directory}
+              remoteName={payload.selectedRepository.remoteName}
+              pullRequest={item}
+              onMerged={onRefresh}
+              styles={styles}
+            />
+            <OpenInVSCodeButton directory={directory} pullRequest={item} styles={styles} />
+          </View>
+        )}
         styles={styles}
       />
       <Text style={styles.fetched}>Updated {new Date(payload.fetchedAt).toLocaleString()}</Text>
@@ -536,6 +794,7 @@ export function GitHubPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
     projectKind: snapshot.projectKind,
   }));
   const callLoadPanel = useRpc(loadPanelRpc);
+  const queryClient = useQueryClient();
   const [remoteName, setRemoteName] = useState<string | undefined>(undefined);
   const [search, setSearch] = useState("");
   const lastGood = useRef(new Map<string, GitHubPanelPayload>());
@@ -559,6 +818,12 @@ export function GitHubPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
   }, [cacheKey, query.data]);
 
   const styles = useMemo(() => makeStyles(theme, layout.compact), [theme, layout.compact]);
+
+  function fullRefresh(): void {
+    lastGood.current.delete(cacheKey);
+    void queryClient.invalidateQueries({ queryKey: ["github-panel-image"] });
+    void query.refetch();
+  }
 
   if (workspace === null) {
     return <View style={styles.screen}><Text style={styles.message}>This workspace is no longer available.</Text></View>;
@@ -591,13 +856,14 @@ export function GitHubPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
   return (
     <ReadyPanel
       payload={payload}
+      directory={directory}
       styles={styles}
       search={search}
       onSearch={setSearch}
       onRemote={setRemoteName}
       staleMessage={query.isError ? `Showing data from ${new Date(payload.fetchedAt).toLocaleString()}. Refresh failed: ${errorMessage(query.error)}` : null}
       refreshing={query.isFetching}
-      onRefresh={() => { void query.refetch(); }}
+      onRefresh={fullRefresh}
     />
   );
 }

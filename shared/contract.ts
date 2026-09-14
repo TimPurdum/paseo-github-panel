@@ -29,6 +29,13 @@ export const CheckSummarySchema = z.object({
   total: z.number().int().nonnegative(),
 });
 
+export const CommentSummarySchema = z.object({
+  author: AuthorSchema.nullable(),
+  bodyHTML: z.string(),
+  createdAt: z.string(),
+  id: z.string(),
+});
+
 export const PullRequestSummarySchema = IssueSummarySchema.extend({
   checks: CheckSummarySchema,
   closingIssue: IssueSummarySchema.nullable(),
@@ -80,6 +87,31 @@ export const LoadPanelRequestSchema = z.object({
   remoteName: z.string().min(1).optional(),
 });
 
+export const MergePullRequestRequestSchema = z.object({
+  directory: z.string().min(1),
+  number: z.number().int().positive(),
+  remoteName: z.string().min(1),
+});
+
+export const MergePullRequestResponseSchema = z.object({ merged: z.literal(true) });
+
+export const OpenInVSCodeRequestSchema = z.object({
+  directory: z.string().min(1),
+});
+
+export const OpenInVSCodeResponseSchema = z.object({ opened: z.literal(true) });
+
+export const LoadCommentsRequestSchema = z.object({
+  directory: z.string().min(1),
+  kind: z.enum(["issue", "pullRequest"]),
+  number: z.number().int().positive(),
+  remoteName: z.string().min(1),
+});
+
+export const LoadCommentsResponseSchema = z.object({
+  comments: z.array(CommentSummarySchema),
+});
+
 export const LoadImageRequestSchema = z.object({ url: z.string().url() });
 export const LoadImageResponseSchema = z.object({
   base64: z.string(),
@@ -98,15 +130,38 @@ export const loadImageRpc = defineRpc({
   output: LoadImageResponseSchema,
 });
 
+export const mergePullRequestRpc = defineRpc({
+  input: MergePullRequestRequestSchema,
+  name: "github.merge-pull-request",
+  output: MergePullRequestResponseSchema,
+});
+
+export const openInVSCodeRpc = defineRpc({
+  input: OpenInVSCodeRequestSchema,
+  name: "github.open-in-vscode",
+  output: OpenInVSCodeResponseSchema,
+});
+
+export const loadCommentsRpc = defineRpc({
+  input: LoadCommentsRequestSchema,
+  name: "github.load-comments",
+  output: LoadCommentsResponseSchema,
+});
+
 export type Author = z.infer<typeof AuthorSchema>;
 export type BranchInfo = z.infer<typeof BranchInfoSchema>;
 export type CheckSummary = z.infer<typeof CheckSummarySchema>;
+export type CommentSummary = z.infer<typeof CommentSummarySchema>;
 export type GitHubPanelPayload = z.infer<typeof GitHubPanelPayloadSchema>;
 export type IssueSummary = z.infer<typeof IssueSummarySchema>;
 export type Label = z.infer<typeof LabelSchema>;
 export type LoadImageRequest = z.infer<typeof LoadImageRequestSchema>;
 export type LoadImageResponse = z.infer<typeof LoadImageResponseSchema>;
+export type LoadCommentsRequest = z.infer<typeof LoadCommentsRequestSchema>;
 export type LoadPanelRequest = z.infer<typeof LoadPanelRequestSchema>;
+export type MergePullRequestRequest = z.infer<typeof MergePullRequestRequestSchema>;
+export type OpenInVSCodeRequest = z.infer<typeof OpenInVSCodeRequestSchema>;
+export type OpenInVSCodeResponse = z.infer<typeof OpenInVSCodeResponseSchema>;
 export type PullRequestSummary = z.infer<typeof PullRequestSummarySchema>;
 export type ReadyPanelPayload = z.infer<typeof ReadyPanelPayloadSchema>;
 export type RemoteRepository = z.infer<typeof RemoteRepositorySchema>;

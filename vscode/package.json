@@ -1,0 +1,22 @@
+{
+  "name": "paseo-github-focus",
+  "displayName": "Paseo GitHub Focus",
+  "description": "Focuses the GitHub Pull Requests view when the Paseo GitHub panel opens a workspace.",
+  "publisher": "dymaptic",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onUri"],
+  "main": "./extension.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TimPurdum/paseo-github-panel.git"
+  },
+  "scripts": {
+    "package": "vsce package --no-dependencies"
+  }
+}
